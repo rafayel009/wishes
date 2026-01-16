@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>A Fading Memory (Controlled)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body {
+    margin: 0;
+    background: radial-gradient(circle at 50% 90%, #1a1515, #050505 60%, #000000);
+    overflow: hidden;
+    font-family: "Playfair Display", Georgia, serif;
+    height: 100vh;
+    width: 100vw;
+}
+
+#scene {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    will-change: transform; 
+}
+
+canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+/* --- COMPACT RIGHT SIDE TEXT --- */
+#message {
+    position: absolute;
+    right: 5%;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 220px;
+    text-align: right;
+    color: #e0c3fc;
+    opacity: 0;
+    transition: opacity 3s ease-in-out;
+    z-index: 10;
+    pointer-events: none;
+}
+
+#message p {
+    margin: 0 0 1rem 0;
+    line-height: 1.4;
+    font-size: 1.1rem;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.9);
+}
+
+#message .signature {
+    margin-top: 1.5rem;
+    font-style: italic;
+    opacity: 0.7;
+    font-size: 0.9rem;
+}
+
+#curtain {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 100;
+    transition: opacity 5s ease;
+}
+
+@media (max-width: 768px) {
+    #message {
+        width: 60%;
+        font-size: 1rem;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<div id="scene">
+    <canvas id="bg"></canvas>
+    <canvas id="tree"></canvas>
+    <canvas id="leaves"></canvas>
+</div>
+
+<div id="message">
+    <p>Hey…</p>
+    <p>I know we don’t talk anymore.</p>
+    <p>But some dates are impossible to forget.</p>
+    <p>Just wanted to wish you a happy birthday.</p>
+    <p class="signature">Hope you’re doing well.</p>
+</div>
+
+<div id="curtain"></div>
+
+<img id="leafImg" src="maple-leaf-svgrepo-com.svg" style="display:none">
+
+<script>
+// --- PERFORMANCE SETTINGS ---
+const MAX_DEPTH = 7;      // Keeps calculation fast
+const DUST_COUNT = 20;    // Low particle count for FPS
+
+const scene = document.getElementById("scene");
+const bg = document.getElementById("bg");
+const tree = document.getElementById("tree");
+const leavesCanvas = document.getElementById("leaves");
+const curtain = document.getElementById("curtain");
+const message = document.getElementById("message");
+const bctx = bg.getContext("2d");
+const ctx = tree.getContext("2d");
+const lctx = leavesCanvas.getContext("2d");
+const leafImg = document.getElementById("leafImg");
+
+let width, height;
+
+function resize() {
+    width = innerWidth;
+    height = innerHeight;
+    bg.width = tree.width = leavesCanvas.width = width;
+    bg.height = tree.height = leavesCanvas.height = height;
+}
+resize();
+window.addEventListener("resize", resize);
+
+const config = {
+    growSpeed: 0.03, 
+    season: 'growing', 
+    time: 0
+};
+
+// Rate Controller Variables
+let fallTimer = 0;
+const FALL_INTERVAL = 8; // Drop 1 leaf every 8 frames (approx 7-8 per second at 60fps)
+
+// Background Dust
+const dust = Array.from({ length: DUST_COUNT }, () => ({
+    x: Math.random() * width,
+    y: Math.random() * height,
+    r: Math.random() * 1.5,
+    v: 0.2 + Math.random() * 0.3
+}));
+
+const branches = [];
+const leaves = [];
+
+function startTree() {
+    branches.push({
+        x: width * 0.25, 
+        y: height, 
+        len: height * 0.22, 
+        angle: -Math.PI / 2, 
+        depth: 0, 
+        progress: 0, 
+        maxWidth: 16,
+        parentIndex: -1
+    });
+}
+
+function updateTree() {
+    let growing = false;
+
+    for (let i = 0; i < branches.length; i++) {
+        let b = branches[i];
+        
+        if (b.progress < 1) {
+            b.progress += config.growSpeed;
+            growing = true;
+            
+            // Spawn Branches
+            if (b.progress >= 0.95 && !b.spawned && b.depth < MAX_DEPTH) {
+                b.spawned = true;
+                spawnChildren(b, i);
+            }
+            
+            // Spawn Leaf: NOW ON ALMOST EVERY BRANCH (Depth > 1)
+            // Depth 0 is trunk, Depth 1 is first split.
+            if (b.progress >= 1 && !b.leafSpawned && b.depth > 1) {
+                b.leafSpawned = true;
+                // 90% chance to spawn a leaf on any finished branch
+                if(Math.random() < 0.9) {
+                    spawnLeaf(b);
+                }
+            }
+        }
+    }
+
+    if (!growing && config.season === 'growing') {
+        setTimeout(() => {
+            config.season = 'falling';
+            triggerMessage();
+        }, 1000);
+    }
+}
+
+function spawnChildren(parent, pIndex) {
+    const num = 2;
+    for (let i = 0; i < num; i++) {
+        branches.push({
+            x: parent.x + Math.cos(parent.angle) * parent.len,
+            y: parent.y + Math.sin(parent.angle) * parent.len,
+            len: parent.len * (0.7 + Math.random() * 0.1),
+            angle: parent.angle + (Math.random() - 0.5) * 1.2,
+            depth: parent.depth + 1,
+            progress: 0,
+            maxWidth: parent.maxWidth * 0.7,
+            parentIndex: pIndex,
+            spawned: false
+        });
+    }
+}
+
+function drawTree() {
+    ctx.clearRect(0, 0, width, height);
+    
+    // Shadow
+    ctx.save();
+    ctx.scale(1, 0.3);
+    const grad = ctx.createRadialGradient(width*0.25, height/0.3, 10, width*0.25, height/0.3, 150);
+    grad.addColorStop(0, "rgba(0,0,0,0.8)");
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(width*0.25, height/0.3, 150, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.lineCap = "round";
+    for (let i = 0; i < branches.length; i++) {
+        let b = branches[i];
+        if (b.progress <= 0) continue;
+        
+        const endX = b.x + Math.cos(b.angle) * b.len * b.progress;
+        const endY = b.y + Math.sin(b.angle) * b.len * b.progress;
+        
+        ctx.strokeStyle = `hsl(30, 20%, ${15 + b.depth * 3}%)`;
+        ctx.lineWidth = b.maxWidth * (1 - (b.progress * 0.5));
+        
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+    }
+}
+
+function spawnLeaf(branch) {
+    const endX = branch.x + Math.cos(branch.angle) * branch.len;
+    const endY = branch.y + Math.sin(branch.angle) * branch.len;
+    
+    leaves.push({
+        x: endX,
+        y: endY,
+        baseX: endX, 
+        baseY: endY,
+        size: 0, 
+        // RANDOM SIZE: Varies from 0.3 to 0.8 scale
+        maxSize: 0.3 + Math.random() * 0.5, 
+        angle: Math.random() * Math.PI,
+        attached: true,
+        vx: 0,
+        vy: 0,
+        vr: 0,
+        stopped: false
+    });
+}
+
+function updateLeaves() {
+    lctx.clearRect(0, 0, width, height);
+
+    // --- FALLING CONTROLLER ---
+    if (config.season === 'falling') {
+        fallTimer++;
+        if (fallTimer > FALL_INTERVAL) {
+            // Find a random leaf that is still attached
+            const attached = leaves.filter(l => l.attached);
+            if (attached.length > 0) {
+                // Pick one randomly
+                const target = attached[Math.floor(Math.random() * attached.length)];
+                target.attached = false;
+                target.vx = (Math.random() - 0.5) * 2;
+                target.vy = 1 + Math.random();
+                target.vr = (Math.random() - 0.5) * 0.05;
+            }
+            fallTimer = 0; // Reset timer
+        }
+    }
+
+    for (let i = 0; i < leaves.length; i++) {
+        let l = leaves[i];
+
+        if (l.attached) {
+            if (l.size < l.maxSize) l.size += 0.05;
+            l.x = l.baseX + Math.sin(config.time * 0.002 + l.baseY) * 3;
+            l.y = l.baseY + Math.cos(config.time * 0.002 + l.baseX) * 1;
+        } else {
+            if (!l.stopped) {
+                l.x += l.vx;
+                l.y += l.vy;
+                l.angle += l.vr;
+                l.vy += 0.02; // Gravity
+
+                if (l.y > height - 40) {
+                    l.stopped = true;
+                    l.y = height - 40 + Math.random() * 10;
+                }
+            }
+        }
+
+        lctx.save();
+        lctx.translate(l.x, l.y);
+        lctx.rotate(l.angle);
+        lctx.scale(l.size, l.size);
+        
+        if(leafImg.complete && leafImg.naturalHeight !== 0){
+             lctx.drawImage(leafImg, -15, -15, 30, 30);
+        } else {
+             lctx.fillStyle = "#d45d5d"; 
+             lctx.beginPath(); lctx.arc(0,0,8,0,Math.PI*2); lctx.fill();
+        }
+        lctx.restore();
+    }
+}
+
+function drawBG() {
+    bctx.clearRect(0, 0, width, height);
+    bctx.fillStyle = "rgba(255,255,255,0.05)";
+    for (let i = 0; i < dust.length; i++) {
+        let p = dust[i];
+        p.y -= p.v;
+        if (p.y < 0) p.y = height;
+        bctx.beginPath();
+        bctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        bctx.fill();
+    }
+}
+
+function cameraDrift() {
+    const dx = Math.sin(config.time * 0.0003) * 15;
+    scene.style.transform = `translateX(${dx}px)`; 
+}
+
+function triggerMessage() {
+    setTimeout(() => {
+        message.style.opacity = 1;
+        setTimeout(() => {
+            curtain.style.opacity = 1;
+        }, 8000);
+    }, 1500);
+}
+
+function loop() {
+    config.time += 16;
+    drawBG();
+    updateTree();
+    drawTree();
+    updateLeaves();
+    cameraDrift();
+    requestAnimationFrame(loop);
+}
+
+startTree();
+loop();
+</script>
+</body>
+</html>
