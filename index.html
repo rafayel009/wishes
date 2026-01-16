@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>A Fading Memory (Grounded & Sprite Bushes)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body {
+    margin: 0;
+    background: radial-gradient(circle at 50% 50%, #221a1a, #0a0505 70%, #000000);
+    overflow: hidden;
+    font-family: "Playfair Display", Georgia, serif;
+    height: 100vh;
+    width: 100vw;
+}
+
+#scene {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    will-change: transform; 
+}
+
+canvas { position: absolute; top: 0; left: 0; }
+
+#message {
+    position: absolute; right: 5%; top: 45%;
+    transform: translateY(-50%); width: 220px;
+    text-align: right; color: #e0c3fc;
+    opacity: 0; transition: opacity 3s ease-in-out;
+    z-index: 10; pointer-events: none;
+}
+
+#message p {
+    margin: 0 0 1rem 0; line-height: 1.4; font-size: 1.1rem;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.9);
+}
+
+#message .signature {
+    margin-top: 1.5rem; font-style: italic; opacity: 0.7; font-size: 0.9rem;
+}
+
+#curtain {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: #000; opacity: 0; pointer-events: none; z-index: 100;
+    transition: opacity 5s ease;
+}
+
+@media (max-width: 768px) {
+    #message { width: 60%; font-size: 1rem; top: 40%; }
+}
+</style>
+</head>
+
+<body>
+
+<div id="scene">
+    <canvas id="bg"></canvas>
+    <canvas id="tree"></canvas>
+    <canvas id="leaves"></canvas>
+</div>
+
+<div id="message">
+    <p>Hey…</p>
+    <p>I know we don’t talk anymore.</p>
+    <p>But some dates are impossible to forget.</p>
+    <p>Just wanted to wish you a happy birthday.</p>
+    <p class="signature">Hope you’re doing well.</p>
+</div>
+
+<div id="curtain"></div>
+
+<img id="leafImg" src="maple-leaf-svgrepo-com.svg" style="display:none">
+<img id="bushSprite" src="bushes-sprite.png" style="display:none">
+
+<script>
+// --- PERFORMANCE SETTINGS ---
+const MAX_DEPTH = 8;      
+const DUST_COUNT = 20;    
+const BUSH_COUNT = 70; // Reduced slightly for performance
+
+const scene = document.getElementById("scene");
+const bg = document.getElementById("bg");
+const tree = document.getElementById("tree");
+const leavesCanvas = document.getElementById("leaves");
+const curtain = document.getElementById("curtain");
+const message = document.getElementById("message");
+const bctx = bg.getContext("2d");
+const ctx = tree.getContext("2d");
+const lctx = leavesCanvas.getContext("2d");
+const leafImg = document.getElementById("leafImg");
+// Get the new bush image
+const bushSprite = document.getElementById("bushSprite");
+
+let width, height, groundLevel;
+
+function resize() {
+    width = innerWidth;
+    height = innerHeight;
+    bg.width = tree.width = leavesCanvas.width = width;
+    bg.height = tree.height = leavesCanvas.height = height;
+    groundLevel = height * 0.85;
+    initBushes(); 
+}
+
+// --- SPRITE BUSHES SETUP ---
+let bushes = [];
+
+// Define the coordinates for a few bush types from your image
+// Format: [sourceX, sourceY, sourceWidth, sourceHeight]
+// These are estimates based on the image you provided.
+const bushTypes = [
+    [20, 40, 250, 150],  // Type 1 (Top-leftish)
+    [350, 40, 250, 150], // Type 2 (Top-middleish)
+    [650, 260, 300, 130], // Type 3 (Middle-right)
+    [30, 260, 250, 130],  // Type 4 (Middle-left)
+    [350, 500, 250, 150]  // Type 5 (Bottom-middle)
+];
+
+function initBushes() {
+    bushes = [];
+    const treeBaseX = width * 0.25;
+    
+    for (let i = 0; i < BUSH_COUNT; i++) {
+        // Pick a random bush type
+        const typeIndex = Math.floor(Math.random() * bushTypes.length);
+        bushes.push({
+            x: treeBaseX + (Math.random() - 0.5) * 600, // Wider spread
+            y: groundLevel - 20 + Math.random() * 20, 
+            // Random scale for variety
+            scale: 0.3 + Math.random() * 0.5, 
+            type: typeIndex,
+            // Random dark brightness (0.1 to 0.2) for variety
+            brightness: 0.1 + Math.random() * 0.1 
+        });
+    }
+    // Sort by Y so lower bushes are drawn in front
+    bushes.sort((a, b) => a.y - b.y);
+}
+
+resize();
+window.addEventListener("resize", resize);
+
+const config = {
+    baseGrowSpeed: 0.025, 
+    season: 'growing', 
+    time: 0
+};
+
+let fallTimer = 0;
+const FALL_INTERVAL = 8; 
+
+const dust = Array.from({ length: DUST_COUNT }, () => ({
+    x: Math.random() * width,
+    y: Math.random() * height,
+    r: Math.random() * 1.5,
+    v: 0.2 + Math.random() * 0.3
+}));
+
+const branches = [];
+const leaves = [];
+
+function startTree() {
+    branches.push({
+        x: width * 0.25, 
+        y: groundLevel + 40, 
+        len: height * 0.18, 
+        angle: -Math.PI / 2, 
+        depth: 0, 
+        progress: 0, 
+        maxWidth: 25, 
+        parentIndex: -1,
+        speedRate: 0.9 + Math.random() * 0.2 
+    });
+}
+
+function updateTree() {
+    let growing = false;
+    for (let i = 0; i < branches.length; i++) {
+        let b = branches[i];
+        if (b.progress < 1) {
+            b.progress += config.baseGrowSpeed * b.speedRate;
+            growing = true;
+            if (b.progress >= 0.95 && !b.spawned && b.depth < MAX_DEPTH) {
+                b.spawned = true;
+                spawnChildren(b, i);
+            }
+            if (b.progress >= 1 && !b.leafSpawned && b.depth > 1) {
+                b.leafSpawned = true;
+                if(Math.random() < 0.9) spawnLeaf(b);
+            }
+        }
+    }
+    if (!growing && config.season === 'growing') {
+        setTimeout(() => {
+            config.season = 'falling';
+            triggerMessage();
+        }, 1000);
+    }
+}
+
+function spawnChildren(parent, pIndex) {
+    const num = Math.random() > 0.3 ? 2 : 1;
+    for (let i = 0; i < num; i++) {
+        branches.push({
+            x: parent.x + Math.cos(parent.angle) * parent.len,
+            y: parent.y + Math.sin(parent.angle) * parent.len,
+            len: parent.len * (0.65 + Math.random() * 0.2), 
+            angle: parent.angle + (Math.random() - 0.5) * 1.4, 
+            depth: parent.depth + 1,
+            progress: 0,
+            maxWidth: parent.maxWidth * 0.7,
+            parentIndex: pIndex,
+            spawned: false,
+            speedRate: 0.9 + Math.random() * 0.2 
+        });
+    }
+}
+
+function drawTree() {
+    ctx.clearRect(0, 0, width, height);
+
+    // LAYER 1: DRAW BRANCHES
+    ctx.lineCap = "round";
+    for (let i = 0; i < branches.length; i++) {
+        let b = branches[i];
+        if (b.progress <= 0) continue;
+        
+        const endX = b.x + Math.cos(b.angle) * b.len * b.progress;
+        const endY = b.y + Math.sin(b.angle) * b.len * b.progress;
+        
+        ctx.strokeStyle = `hsl(30, 15%, ${8 + b.depth * 2}%)`;
+        ctx.lineWidth = Math.max(1, b.maxWidth * (1 - (b.progress * 0.6)));
+        
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+    }
+
+    // LAYER 2: DRAW SOLID GROUND
+    const gGrad = ctx.createLinearGradient(0, groundLevel, 0, height);
+    gGrad.addColorStop(0, "#0a0a0a"); 
+    gGrad.addColorStop(1, "#000000"); 
+    ctx.fillStyle = gGrad;
+    ctx.fillRect(0, groundLevel, width, height - groundLevel);
+    
+    // LAYER 3: DRAW SPRITE BUSHES
+    // Only draw if image is loaded
+    if(bushSprite.complete && bushSprite.naturalHeight !== 0) {
+        for (let i = 0; i < bushes.length; i++) {
+            let b = bushes[i];
+            const [sx, sy, sw, sh] = bushTypes[b.type];
+            const dw = sw * b.scale;
+            const dh = sh * b.scale;
+
+            // Apply filter to make it dark and shadowy
+            ctx.filter = `brightness(${b.brightness}) grayscale(100%)`;
+            
+            // Draw the image sprite
+            // Center the draw point horizontally
+            ctx.drawImage(bushSprite, sx, sy, sw, sh, b.x - dw/2, b.y - dh/2, dw, dh);
+        }
+        // Reset filter so it doesn't affect other things
+        ctx.filter = 'none';
+    }
+}
+
+function spawnLeaf(branch) {
+    const endX = branch.x + Math.cos(branch.angle) * branch.len;
+    const endY = branch.y + Math.sin(branch.angle) * branch.len;
+    leaves.push({
+        x: endX, y: endY, baseX: endX, baseY: endY, size: 0, 
+        maxSize: 0.3 + Math.random() * 0.5, 
+        angle: Math.random() * Math.PI, attached: true,
+        vx: 0, vy: 0, vr: 0, stopped: false
+    });
+}
+
+function updateLeaves() {
+    lctx.clearRect(0, 0, width, height);
+
+    if (config.season === 'falling') {
+        fallTimer++;
+        if (fallTimer > FALL_INTERVAL) {
+            const attached = leaves.filter(l => l.attached);
+            if (attached.length > 0) {
+                const target = attached[Math.floor(Math.random() * attached.length)];
+                target.attached = false;
+                target.vx = (Math.random() - 0.5) * 2;
+                target.vy = 1 + Math.random();
+                target.vr = (Math.random() - 0.5) * 0.05;
+            }
+            fallTimer = 0; 
+        }
+    }
+
+    for (let i = 0; i < leaves.length; i++) {
+        let l = leaves[i];
+        if (l.attached) {
+            if (l.size < l.maxSize) l.size += 0.05;
+            l.x = l.baseX + Math.sin(config.time * 0.002 + l.baseY) * 3;
+            l.y = l.baseY + Math.cos(config.time * 0.002 + l.baseX) * 1;
+        } else {
+            if (!l.stopped) {
+                l.x += l.vx; l.y += l.vy; l.angle += l.vr; l.vy += 0.02; 
+                // Land in the new bushes
+                if (l.y > groundLevel + Math.random() * 30) {
+                    l.stopped = true;
+                    l.y = groundLevel + Math.random() * 30;
+                }
+            }
+        }
+        lctx.save();
+        lctx.translate(l.x, l.y);
+        lctx.rotate(l.angle);
+        lctx.scale(l.size, l.size);
+        if(leafImg.complete && leafImg.naturalHeight !== 0){
+             lctx.drawImage(leafImg, -15, -15, 30, 30);
+        } else {
+             lctx.fillStyle = "#d45d5d"; 
+             lctx.beginPath(); lctx.arc(0,0,8,0,Math.PI*2); lctx.fill();
+        }
+        lctx.restore();
+    }
+}
+
+function drawBG() {
+    bctx.clearRect(0, 0, width, height);
+    bctx.fillStyle = "rgba(255,255,255,0.05)";
+    for (let i = 0; i < dust.length; i++) {
+        let p = dust[i];
+        p.y -= p.v;
+        if (p.y < 0) p.y = height;
+        bctx.beginPath();
+        bctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        bctx.fill();
+    }
+}
+
+function cameraDrift() {
+    const dx = Math.sin(config.time * 0.0003) * 15;
+    scene.style.transform = `translateX(${dx}px)`; 
+}
+
+function triggerMessage() {
+    setTimeout(() => {
+        message.style.opacity = 1;
+        setTimeout(() => {
+            curtain.style.opacity = 1;
+        }, 8000);
+    }, 1500);
+}
+
+function loop() {
+    config.time += 16;
+    drawBG();
+    updateTree();
+    drawTree();
+    updateLeaves();
+    cameraDrift();
+    requestAnimationFrame(loop);
+}
+
+startTree();
+loop();
+</script>
+</body>
+</html>
